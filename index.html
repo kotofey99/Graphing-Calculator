@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Graphing Calculator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js"></script>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { font-family: 'Inter', sans-serif; transition: background-color 0.3s; }
+    #app { max-width: 1200px; margin: 0 auto; }
+    button { transition: all 0.2s ease; }
+    #add-fn, #reset-fns {
+      font-size: 0.875rem; padding: 0.4rem 0.75rem;
+      border-radius: 0.65rem; font-weight: 600;
+    }
+    #add-fn {
+      background: linear-gradient(90deg, #6366f1, #4f46e5);
+      box-shadow: 0 2px 4px rgba(99,102,241,0.3);
+    }
+    #add-fn:hover {
+      background: linear-gradient(90deg, #818cf8, #6366f1);
+      transform: translateY(-1px);
+    }
+    #reset-fns { background: #374151; color: #e5e7eb; }
+    #reset-fns:hover { background: #4b5563; transform: translateY(-1px); }
+  </style>
+</head>
+<body class="bg-gray-900 text-gray-100 antialiased">
+<div id="app" class="min-h-screen p-6 flex flex-col gap-6">
+  <header class="flex items-center justify-between">
+    <h1 class="text-2xl font-semibold text-indigo-400">Graphing Calculator</h1>
+    <div id="lang-toggle" class="flex items-center gap-1 cursor-pointer text-sm select-none transition">
+  <span class="text-gray-400">RU</span>
+  <div class="w-10 h-5 bg-gray-700 rounded-full relative">
+    <div class="dot absolute left-1 top-1 w-3 h-3 bg-indigo-400 rounded-full transition-all duration-300"></div>
+  </div>
+  <span class="text-gray-400">EN</span>
+</div>
+
+  </header>
+
+  <main class="flex flex-col md:flex-row gap-6 flex-1">
+    <section class="w-full md:w-80 bg-gray-800 rounded-2xl p-3 flex flex-col gap-3">
+      <h2 class="text-md font-medium border-b border-gray-700 pb-1">Functions</h2>
+      <div id="functions-list" class="flex flex-col gap-2 overflow-y-auto" style="max-height:30vh;"></div>
+      <div class="flex gap-2">
+        <button id="add-fn" class="flex-1">Add Function</button>
+        <button id="reset-fns">Reset</button>
+      </div>
+    </section>
+
+    <section class="flex-1 flex flex-col gap-3">
+      <div class="bg-gray-800 rounded-2xl p-3 flex flex-col gap-2 relative">
+        <canvas id="graph-canvas" class="w-full aspect-square rounded-lg border border-gray-700"></canvas>
+        <div id="legend" class="absolute right-3 top-3 bg-gray-900/80 backdrop-blur-sm rounded-lg p-2 text-xs text-gray-200 shadow-xl border border-gray-700"></div>
+        <div id="cursor-info" class="absolute left-3 bottom-3 bg-gray-900/80 text-xs px-2 py-1 rounded border border-gray-700 font-mono text-gray-200"></div>
+      </div>
+
+      
+      <div id="intersections" class="bg-gray-800 rounded-2xl p-3 text-sm text-gray-200"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+(() => {
+  const palette=['#ff6b6b','#4dabf7','#51cf66','#ffd43b','#b197fc','#ffa94d'];
+  let colorIndex=0,fnCounter=0;const functions=[];
+  const $=s=>document.querySelector(s);
+  const canvas=$('#graph-canvas'),ctx=canvas.getContext('2d');
+  const dpr=window.devicePixelRatio||1;const legend=$('#legend');
+  const cursorInfo=$('#cursor-info');
+  let view = {xmin:-4,xmax:4,ymin:-4,ymax:4};
+  let isDragging=false,last={x:0,y:0},mouse={x:0,y:0,inside:false};
+
+  function resizeCanvas(){
+    const r=canvas.getBoundingClientRect();
+    canvas.width=Math.floor(r.width*dpr);
+    canvas.height=Math.floor(r.height*dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    drawAll();
+    updateIntersections();
+  }
+  window.addEventListener('resize',resizeCanvas);
+
+  function addFunctionRow(initial='y = x^2 - 3'){
+    const id=++fnCounter;
+    const color=palette[colorIndex++%palette.length];
+    const div=document.createElement('div');
+    div.className='flex items-center gap-2 bg-gray-900 rounded-lg p-2';
+    div.innerHTML=`
+      <div class="h-5 w-4 rounded-sm cursor-pointer" style="background:${color};"></div>
+      <input class="flex-1 bg-transparent text-gray-200 text-sm focus:outline-none" value="${initial}" />
+      <button class="px-2 py-0.5 bg-gray-800 text-red-400 rounded">×</button>`;
+    $('#functions-list').appendChild(div);
+
+    const input=div.querySelector('input'),remove=div.querySelector('button'),colorBox=div.querySelector('.h-5');
+    const fn={id,raw:initial,color,compiled:null,name:`f${id}`};
+    functions.push(fn);
+    compile(fn);updateLegend();updateIntersections();drawAll();
+
+    input.addEventListener('input',()=>{
+      fn.raw=input.value;
+      compile(fn);
+      drawAll();
+      updateLegend();
+      updateIntersections();
+    });
+    remove.addEventListener('click',()=>{
+      functions.splice(functions.indexOf(fn),1);
+      div.remove();
+      updateLegend();
+      drawAll();
+      updateIntersections();
+    });
+    colorBox.addEventListener('click',()=>{
+      const picker=document.createElement('input');picker.type='color';picker.value=fn.color;picker.style.position='absolute';picker.style.opacity=0;
+      document.body.appendChild(picker);picker.click();
+      picker.addEventListener('input',()=>{fn.color=picker.value;colorBox.style.background=picker.value;updateLegend();drawAll();});
+      picker.addEventListener('blur',()=>picker.remove());
+    });
+  }
+
+  function compile(fn){
+    try{
+      const eq=fn.raw.includes('=')?fn.raw.split('=')[1]:fn.raw;
+      const c=math.parse(eq).compile();
+      fn.compiled=x=>{
+        try{const y=c.evaluate({x});return typeof y==='number'?y:NaN;}catch{return NaN;}
+      };
+    }catch{fn.compiled=null;}
+  }
+
+  function updateLegend(){
+    legend.innerHTML='<div class="font-bold text-indigo-400 mb-1 text-xs">Legend</div>';
+    functions.forEach(f=>{
+      if(!f.compiled)return;
+      const d=document.createElement('div');
+      d.className='flex items-center gap-2';
+      d.innerHTML=`<div class="w-3 h-3 rounded-sm" style="background:${f.color}"></div><div>${f.raw}</div>`;
+      legend.appendChild(d);
+    });
+  }
+
+  function findXIntersections(f, xmin, xmax, steps=1000) {
+    const xs = [];
+    const dx = (xmax - xmin) / steps;
+    for (let i = 0; i < steps; i++) {
+      const x1 = xmin + i*dx;
+      const x2 = x1 + dx;
+      const y1 = f(x1);
+      const y2 = f(x2);
+      if (!isFinite(y1) || !isFinite(y2)) continue;
+      if (y1 === 0) xs.push(x1);
+      else if ((y1 < 0 && y2 > 0) || (y1 > 0 && y2 < 0)) {
+        const xZero = x1 - y1*(x2-x1)/(y2-y1);
+        xs.push(xZero);
+      }
+    }
+    return xs;
+  }
+
+  function updateIntersections() {
+    const container = document.getElementById('intersections');
+    container.innerHTML = '';
+    functions.forEach(f => {
+      if (!f.compiled) return;
+
+      const y0 = f.compiled(0); 
+      const xIntersections = findXIntersections(f.compiled, view.xmin, view.xmax);
+
+      const fnName = f.raw;
+      const html = `
+        <div class="mb-3">
+          <div class="font-semibold text-indigo-400 mb-1">Функция: ${fnName}</div>
+          <div class="mb-1">Точки пересечения с осью Oy</div>
+          <table class="table-auto border-collapse border border-gray-600 mb-1">
+            <thead>
+              <tr><th class="border border-gray-600 px-2">Имя</th><th class="border border-gray-600 px-2">x</th><th class="border border-gray-600 px-2">y</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>A</td><td>0</td><td>${y0.toFixed(3)}</td></tr>
+            </tbody>
+          </table>
+          <div class="mb-1">Точки пересечения с осью Ox</div>
+          <table class="table-auto border-collapse border border-gray-600">
+            <thead>
+              <tr><th class="border border-gray-600 px-2">Имя</th><th class="border border-gray-600 px-2">x</th><th class="border border-gray-600 px-2">y</th></tr>
+            </thead>
+            <tbody>
+              ${xIntersections.map((x,i)=>`<tr><td>B${i+1}</td><td>${x.toFixed(3)}</td><td>0</td></tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+      container.innerHTML += html;
+    });
+  }
+
+  function worldToScreen(x,y){
+    const w=canvas.width/dpr,h=canvas.height/dpr;
+    return { sx:(x-view.xmin)/(view.xmax-view.xmin)*w, sy:(1-(y-view.ymin)/(view.ymax-view.ymin))*h };
+  }
+  function screenToWorld(sx,sy){
+    const w=canvas.width/dpr,h=canvas.height/dpr;
+    return { x:view.xmin+sx/w*(view.xmax-view.xmin), y:view.ymax-sy/h*(view.ymax-view.y.min) };
+  }
+
+  function niceStep(r){const p=10**Math.floor(Math.log10(r));const n=r/p;return n<1.5?p:n<3?2*p:n<7?5*p:10*p;}
+  function drawGrid(w,h){
+    const xs=view.xmax-view.xmin,ys=view.ymax-view.ymin;
+    const xS=niceStep(xs/10),yS=niceStep(ys/8);
+    ctx.lineWidth=1;ctx.font='10px Inter';
+
+    for(let gx=Math.ceil(view.xmin/xS)*xS;gx<=view.xmax;gx+=xS){
+      const p=worldToScreen(gx,0);
+      ctx.strokeStyle='rgba(255,255,255,0.1)';
+      ctx.beginPath();ctx.moveTo(p.sx,0);ctx.lineTo(p.sx,h);ctx.stroke();
+      if(view.ymin<0 && view.ymax>0){
+        const axisY=worldToScreen(0,0).sy;
+        ctx.fillStyle='#9ca3af';ctx.textAlign='center';
+        ctx.fillText(gx.toFixed(1).replace(/\.0$/,''),p.sx,axisY+12);
+      }
+    }
+
+    for(let gy=Math.ceil(view.ymin/yS)*yS;gy<=view.ymax;gy+=yS){
+      const p=worldToScreen(0,gy);
+      ctx.strokeStyle='rgba(255,255,255,0.1)';
+      ctx.beginPath();ctx.moveTo(0,p.sy);ctx.lineTo(w,p.sy);ctx.stroke();
+      if(view.xmin<0 && view.xmax>0){
+        const axisX=worldToScreen(0,0).sx;
+        ctx.fillStyle='#9ca3af';ctx.textAlign='right';
+        ctx.fillText(gy.toFixed(1).replace(/\.0$/,''),axisX-5,p.sy+3);
+      }
+    }
+  }
+  function drawAxes(w,h){
+    ctx.lineWidth=1.5;ctx.strokeStyle='#ffffff';
+    if(view.ymin<=0&&view.ymax>=0){
+      const p=worldToScreen(0,0);
+      ctx.beginPath();ctx.moveTo(0,p.sy);ctx.lineTo(w,p.sy);ctx.stroke();
+    }
+    if(view.xmin<=0&&view.xmax>=0){
+      const p=worldToScreen(0,0);
+      ctx.beginPath();ctx.moveTo(p.sx,0);ctx.lineTo(p.sx,h);ctx.stroke();
+    }
+  }
+
+  function drawFunctions(w,h){
+    const n=1500,dx=(view.xmax-view.xmin)/(n-1);
+    functions.forEach(f=>{
+      if(!f.compiled)return;
+      ctx.beginPath();let moved=false;
+      for(let i=0;i<n;i++){
+        const x=view.xmin+i*dx,y=f.compiled(x);
+        if(!isFinite(y)) continue;
+        const p=worldToScreen(x,y);
+        if(!moved){ctx.moveTo(p.sx,p.sy); moved=true;}
+        else ctx.lineTo(p.sx,p.sy);
+      }
+      ctx.lineWidth=2;ctx.strokeStyle=f.color;ctx.stroke();
+
+
+let labelX = null, labelY = null;
+for (let i = n - 1; i >= 0; i--) {
+  const x = view.xmin + i * dx;
+  const y = f.compiled(x);
+  if (isFinite(y)) {
+    const p = worldToScreen(x, y);
+
+    if (p.sx >= 0 && p.sx <= w && p.sy >= 0 && p.sy <= h) {
+      labelX = x;
+      labelY = y;
+      break;
+    }
+  }
+}
+
+if (labelX !== null) {
+  const p = worldToScreen(labelX, labelY);
+  ctx.fillStyle = f.color;
+  ctx.font = '17px Inter';
+  ctx.fillText(f.raw, p.sx + 5, p.sy - 5);
+}
+    });
+  }
+
+  function drawIntersectionsOnGraph() {
+    functions.forEach(f => {
+      if(!f.compiled) return;
+      const y0 = f.compiled(0);
+      const xIntersections = findXIntersections(f.compiled, view.xmin, view.xmax);
+
+
+      if(isFinite(y0)){
+        const p = worldToScreen(0,y0);
+        ctx.fillStyle = f.color;
+        ctx.beginPath();
+        ctx.arc(p.sx,p.sy,4,0,2*Math.PI);
+        ctx.fill();
+      }
+
+
+      xIntersections.forEach(x=>{
+        if(!isFinite(x)) return;
+        const p = worldToScreen(x,0);
+        ctx.fillStyle = f.color;
+        ctx.beginPath();
+        ctx.arc(p.sx,p.sy,4,0,2*Math.PI);
+        ctx.fill();
+      });
+    });
+  }
+
+  function drawCursor(w,h){
+    if(!mouse.inside)return;
+    const {x,y}=screenToWorld(mouse.x,mouse.y);
+    const p=worldToScreen(x,y);
+    ctx.setLineDash([5,5]);
+    ctx.strokeStyle='rgba(255,255,255,0.3)';
+    ctx.beginPath();ctx.moveTo(p.sx,0);ctx.lineTo(p.sx,h);
+    ctx.moveTo(0,p.sy);ctx.lineTo(w,p.sy);ctx.stroke();
+    ctx.setLineDash([]);
+    cursorInfo.textContent=`x=${x.toFixed(3)}, y=${y.toFixed(3)}`;
+  }
+
+  function drawAll(){
+    const w=canvas.width/dpr,h=canvas.height/dpr;
+    ctx.clearRect(0,0,w,h);
+    ctx.fillStyle='#111827';ctx.fillRect(0,0,w,h);
+    drawGrid(w,h);
+    drawAxes(w,h);
+    drawFunctions(w,h);
+    drawIntersectionsOnGraph();
+    drawCursor(w,h);
+  }
+
+  canvas.addEventListener('mousedown',e=>{isDragging=true;last={x:e.offsetX,y:e.offsetY};});
+  canvas.addEventListener('mouseup',()=>isDragging=false);
+  canvas.addEventListener('mouseleave',()=>{isDragging=false;mouse.inside=false;drawAll();});
+  canvas.addEventListener('mousemove',e=>{
+    mouse={x:e.offsetX,y:e.offsetY,inside:true};
+    if(isDragging){
+      const dx=e.offsetX-last.x,dy=e.offsetY-last.y;
+      last={x:e.offsetX,y:e.offsetY};
+      const scaleX=(view.xmax-view.xmin)/(canvas.width/dpr);
+      const scaleY=(view.ymax-view.ymin)/(canvas.height/dpr);
+      view.xmin-=dx*scaleX;view.xmax-=dx*scaleX;
+      view.ymin+=dy*scaleY;view.ymax+=dy*scaleY;
+    }
+    drawAll();
+  });
+  canvas.addEventListener('wheel',e=>{
+    e.preventDefault();
+    const factor=e.deltaY<0?0.9:1.1;
+    const mx=e.offsetX,my=e.offsetY;
+    const world=screenToWorld(mx,my);
+    const w=view.xmax-view.xmin,h=view.ymax-view.ymin;
+    const newW=w*factor,newH=h*factor;
+    view.xmin=world.x-(world.x-view.xmin)*(newW/w);
+    view.xmax=view.xmin+newW;
+    view.ymin=world.y-(world.y-view.y.min)*(newH/h);
+    view.ymax=view.ymin+newH;
+    drawAll();
+  });
+
+  $('#add-fn').addEventListener('click',()=>addFunctionRow('y = sin(x)'));
+  $('#reset-fns').addEventListener('click',()=>{
+    functions.splice(0,functions.length);
+    $('#functions-list').innerHTML='';
+    addFunctionRow('y = x-1');
+    addFunctionRow('y = -1x');
+  });
+
+  addFunctionRow('y = x^2 - 3');
+  addFunctionRow('y = 2*sin(x)');
+  addFunctionRow('y = -x-2');
+  addFunctionRow('y = x-2');
+  resizeCanvas();
+})();
+
+let currentLang = localStorage.getItem("lang") || "ru";
+const toggle = document.getElementById("lang-toggle");
+const dot = toggle.querySelector(".dot");
+
+const langMap = {
+  ru: {
+    title: "Графический калькулятор",
+    functions: "Функции",
+    add: "Добавить функцию",
+    reset: "Сбросить",
+    legend: "Легенда",
+    oy: "Точки пересечения с осью Oy",
+    ox: "Точки пересечения с осью Ox",
+    func: "Функция",
+    nameA: "Имя",
+  },
+  en: {
+    title: "Graphing Calculator",
+    functions: "Functions",
+    add: "Add Function",
+    reset: "Reset",
+    legend: "Legend",
+    oy: "Intersections with Oy",
+    ox: "Intersections with Ox",
+    func: "Function",
+    nameA: "Name",
+  }
+};
+
+function updateLanguage() {
+  const t = langMap[currentLang];
+  document.title = t.title;
+  document.querySelector("h1").textContent = t.title;
+  document.querySelector("h2").textContent = t.functions;
+  document.getElementById("add-fn").textContent = t.add;
+  document.getElementById("reset-fns").textContent = t.reset;
+
+  const container = document.getElementById("intersections");
+  container.querySelectorAll(".font-semibold").forEach(el => {
+    const name = el.textContent.split(': ')[1] || '';
+    el.textContent = `${t.func}: ${name}`;
+  });
+  container.querySelectorAll("div.mb-1:nth-of-type(1)").forEach(el => el.textContent = t.oy);
+  container.querySelectorAll("div.mb-1:nth-of-type(2)").forEach(el => el.textContent = t.ox);
+  container.querySelectorAll("thead tr th:first-child").forEach(el => el.textContent = t.nameA);
+  document.querySelector("#legend div.font-bold").textContent = t.legend;
+}
+
+function applyLangState() {
+  if (currentLang === "en") {
+    dot.style.transform = "translateX(20px)";
+  } else {
+    dot.style.transform = "translateX(0)";
+  }
+  updateLanguage();
+}
+
+toggle.addEventListener("click", () => {
+  currentLang = currentLang === "ru" ? "en" : "ru";
+  localStorage.setItem("lang", currentLang);
+  toggle.classList.add("animate-pulse");
+  setTimeout(() => toggle.classList.remove("animate-pulse"), 300);
+  applyLangState();
+});
+
+applyLangState();
+
+
+
+</script>
+</body>
+</html>
